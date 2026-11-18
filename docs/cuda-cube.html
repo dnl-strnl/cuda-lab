@@ -1,0 +1,1291 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CUDA Cube — Thread × Warp × Block Visualizer</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700;800&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0a0e14;
+    --bg-elev: #0c1118;
+    --surface: #0f141c;
+    --surface-2: #151c26;
+    --border: #1f2937;
+    --border-bright: #2d3a50;
+    --text: #d7dde7;
+    --text-dim: #7c8a9f;
+    --text-faint: #4a5468;
+    --accent: #76b900;
+    --accent-dim: #3c5b14;
+    --info: #59c2ff;
+    --danger: #ff7385;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'JetBrains Mono', ui-monospace, monospace;
+    font-size: 13px;
+    line-height: 1.5;
+    height: 100vh;
+    overflow: hidden;
+  }
+  body {
+    display: grid;
+    grid-template-rows: auto 1fr auto;
+  }
+  header {
+    border-bottom: 1px solid var(--border);
+    padding: 12px 22px;
+    display: flex;
+    align-items: center;
+    gap: 22px;
+    background: var(--surface);
+  }
+  .brand {
+    display: flex;
+    align-items: baseline;
+    gap: 14px;
+  }
+  .brand h1 {
+    font-size: 17px;
+    font-weight: 800;
+    letter-spacing: 0.08em;
+    color: var(--accent);
+  }
+  .brand .sub {
+    font-size: 11px;
+    color: var(--text-dim);
+    letter-spacing: 0.04em;
+  }
+  .controls {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-left: auto;
+  }
+  select, button {
+    background: var(--surface-2);
+    color: var(--text);
+    border: 1px solid var(--border);
+    padding: 7px 13px;
+    font-family: inherit;
+    font-size: 12px;
+    cursor: pointer;
+    border-radius: 4px;
+    transition: border-color 0.15s, background 0.15s, color 0.15s;
+  }
+  select:hover, button:hover {
+    border-color: var(--border-bright);
+    background: var(--border);
+  }
+  button.primary {
+    background: var(--accent-dim);
+    border-color: var(--accent);
+    color: var(--accent);
+    font-weight: 700;
+  }
+  button.primary:hover {
+    background: var(--accent);
+    color: var(--bg);
+  }
+  #algo-select { min-width: 240px; }
+  #speed-select { min-width: 86px; }
+  main {
+    display: grid;
+    grid-template-columns: 1fr 460px;
+    overflow: hidden;
+    min-height: 0;
+  }
+  #viz-col {
+    display: grid;
+    grid-template-rows: 1fr auto;
+    overflow: hidden;
+    min-height: 0;
+  }
+
+  /* the cube */
+  #viz {
+    position: relative;
+    overflow: hidden;
+  }
+  #viz canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+    cursor: grab;
+    touch-action: none;
+  }
+  #viz canvas:active { cursor: grabbing; }
+  #block-labels {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    z-index: 5;
+  }
+  .block-label {
+    position: absolute;
+    transform: translate(-50%, -50%);
+    background: rgba(15, 20, 28, 0.85);
+    border: 1px solid var(--border-bright);
+    color: var(--text-dim);
+    font-size: 9px;
+    padding: 1px 5px;
+    border-radius: 2px;
+    white-space: nowrap;
+    letter-spacing: 0.04em;
+    transition: color 0.15s, border-color 0.15s, background 0.15s;
+  }
+  .block-label.running {
+    color: #fff;
+    border-color: var(--info);
+    background: rgba(89, 194, 255, 0.25);
+    box-shadow: 0 0 6px rgba(89, 194, 255, 0.4);
+  }
+  .block-label.done {
+    color: var(--text-faint);
+    border-color: var(--accent-dim);
+    background: rgba(60, 91, 20, 0.2);
+  }
+  #tooltip {
+    position: absolute;
+    pointer-events: none;
+    background: rgba(15, 20, 28, 0.96);
+    border: 1px solid var(--border-bright);
+    padding: 7px 11px;
+    border-radius: 4px;
+    font-size: 11px;
+    transform: translate(14px, -110%);
+    opacity: 0;
+    transition: opacity 0.1s;
+    white-space: nowrap;
+    z-index: 10;
+    line-height: 1.6;
+  }
+  #tooltip.show { opacity: 1; }
+  #tooltip b { color: var(--accent); font-weight: 600; }
+  #tooltip .lane { color: var(--text-dim); }
+  #tooltip .index { color: var(--accent); }
+  .axes, .hint {
+    position: absolute;
+    left: 18px;
+    font-size: 10px;
+    color: var(--text-faint);
+    line-height: 1.7;
+  }
+  .axes { top: 14px; }
+  .axes b { color: var(--text-dim); font-weight: 600; }
+  .hint { bottom: 14px; letter-spacing: 0.04em; }
+  #reset-view-btn {
+    position: absolute;
+    top: 14px;
+    right: 14px;
+    background: rgba(15, 20, 28, 0.8);
+    border-color: var(--border-bright);
+    color: var(--text-dim);
+    font-size: 10px;
+    padding: 5px 10px;
+    border-radius: 3px;
+    z-index: 6;
+    letter-spacing: 0.04em;
+  }
+  #reset-view-btn:hover {
+    color: var(--accent);
+    border-color: var(--accent);
+    background: rgba(118, 185, 0, 0.08);
+  }
+
+  /* the memory strip under the cube */
+  #data-view {
+    background: var(--bg-elev);
+    border-top: 1px solid var(--border);
+    max-height: 290px;
+    overflow: auto;
+    padding: 10px 16px 14px;
+  }
+  .data-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+  }
+  .data-legend {
+    display: flex;
+    gap: 14px;
+    font-size: 10px;
+    color: var(--text-faint);
+  }
+  .dl-item { display: inline-flex; align-items: center; gap: 5px; }
+  .dl-sw { width: 9px; height: 9px; border-radius: 2px; }
+  #data-content { display: flex; flex-direction: column; gap: 8px; }
+  .data-row { display: flex; align-items: center; gap: 10px; }
+  .data-row-label {
+    font-size: 11px;
+    color: var(--accent);
+    min-width: 28px;
+    text-align: right;
+    font-weight: 600;
+  }
+  .data-row-label .lbl-sub { color: var(--text-faint); font-weight: 400; font-size: 9px; }
+  .data-cells { display: flex; gap: 1px; }
+  .data-cell, .data-grid-cell, .dl-sw {
+    background: var(--border);
+    border-radius: 1px;
+    transition: background 0.15s, box-shadow 0.15s;
+  }
+  .data-cell { width: 9px; height: 14px; }
+  .data-grid-cell { width: var(--px); height: var(--px); }
+  /* a one-element array, drawn as a single wide cell */
+  .value {
+    background: #2a3340;
+    width: auto;
+    min-width: 22px;
+    height: 18px;
+    padding: 0 4px;
+    font-size: 10px;
+    color: var(--text-dim);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+  /* cell states; one class each, so they must come after the base rules above */
+  .read      { background: var(--accent); box-shadow: 0 0 5px rgba(118, 185, 0, 0.6); color: #fff; }
+  .write     { background: var(--info); box-shadow: 0 0 5px rgba(89, 194, 255, 0.6); color: #fff; }
+  .done      { background: var(--accent-dim); }
+  .divergent { background: var(--danger); }
+  .k-tile    { background: #2a4060; }
+  .data-grid-wrap {
+    display: flex;
+    gap: 18px;
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+  .data-grid-wrap.matrices { flex-wrap: nowrap; }
+  .data-grid-block {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .data-grid-title {
+    font-size: 10px;
+    color: var(--accent);
+    text-align: center;
+    font-weight: 600;
+  }
+  .data-grid {
+    display: inline-grid;
+    grid-template-columns: repeat(var(--cols), var(--px));
+    gap: 1px;
+    padding: 4px;
+    background: #0f1517;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+  }
+  .data-op {
+    align-self: center;
+    font-size: 22px;
+    color: var(--text-faint);
+  }
+  .data-note {
+    font-size: 10px;
+    color: var(--text-faint);
+    font-style: italic;
+  }
+
+  /* the side panel */
+  aside {
+    border-left: 1px solid var(--border);
+    background: var(--surface);
+    overflow-y: auto;
+  }
+  .panel {
+    border-bottom: 1px solid var(--border);
+    padding: 14px 18px;
+  }
+  .panel-label {
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+    color: var(--text-faint);
+    margin-bottom: 9px;
+    font-weight: 600;
+  }
+  .algo-name {
+    font-size: 14px;
+    font-weight: 600;
+    margin-bottom: 3px;
+  }
+  .algo-desc {
+    font-size: 11px;
+    color: var(--text-dim);
+    margin-bottom: 10px;
+    line-height: 1.6;
+  }
+  .dim-pills {
+    display: flex;
+    gap: 5px;
+    flex-wrap: wrap;
+  }
+  .pill {
+    font-size: 10px;
+    padding: 3px 8px;
+    border-radius: 100px;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+  }
+  .pill .k { color: var(--text-faint); margin-right: 6px; }
+  .pill .v { color: var(--accent); font-weight: 600; }
+  .code-block {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    overflow-x: auto;
+    font-size: 11px;
+    line-height: 1.65;
+    padding: 8px 0;
+  }
+  .code-line {
+    padding: 0 12px;
+    white-space: pre;
+    color: var(--text-dim);
+    border-left: 2px solid transparent;
+    transition: background 0.12s;
+  }
+  .code-line.active {
+    background: rgba(118, 185, 0, 0.08);
+    border-left-color: var(--accent);
+    color: var(--text);
+  }
+  .code-line .num {
+    color: var(--text-faint);
+    margin-right: 10px;
+    user-select: none;
+    display: inline-block;
+    width: 18px;
+    text-align: right;
+  }
+  .kw  { color: #d885d8; }
+  .typ { color: var(--info); }
+  .num-val { color: #ffb454; }
+  .com { color: #5c6773; font-style: italic; }
+  .stats {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 7px;
+  }
+  .stat {
+    background: var(--surface-2);
+    padding: 8px 10px;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+  }
+  .stat .k {
+    font-size: 9px;
+    color: var(--text-faint);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    font-weight: 600;
+  }
+  .stat .v {
+    font-size: 18px;
+    font-weight: 600;
+    color: var(--accent);
+    margin-top: 1px;
+    font-variant-numeric: tabular-nums;
+  }
+  .note {
+    background: rgba(89, 194, 255, 0.05);
+    border: 1px solid rgba(89, 194, 255, 0.2);
+    border-left-width: 3px;
+    border-radius: 4px;
+    padding: 9px 11px;
+    font-size: 11px;
+    line-height: 1.65;
+  }
+  .note .masked { color: var(--danger); }
+  .legend-row {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    margin-bottom: 5px;
+    font-size: 10px;
+    color: var(--text-dim);
+  }
+  .legend-row:last-child { margin-bottom: 0; }
+  .swatch {
+    width: 13px;
+    height: 13px;
+    border-radius: 2px;
+    flex-shrink: 0;
+  }
+
+  footer {
+    border-top: 1px solid var(--border);
+    padding: 8px 22px;
+    background: var(--surface);
+    font-size: 10px;
+    color: var(--text-dim);
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    letter-spacing: 0.04em;
+  }
+  .progress {
+    flex: 1;
+    height: 3px;
+    background: var(--border);
+    border-radius: 100px;
+    overflow: hidden;
+  }
+  .progress-bar {
+    height: 100%;
+    width: 0;
+    background: var(--accent);
+    transition: width 0.25s ease;
+  }
+  .run-dot {
+    display: inline-block;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--accent);
+    margin-right: 5px;
+    vertical-align: middle;
+    animation: pulse 1s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(118, 185, 0, 0.6); }
+    50% { opacity: 0.55; box-shadow: 0 0 0 5px rgba(118, 185, 0, 0); }
+  }
+  .run-dot.paused { animation: none; background: var(--text-faint); }
+
+  /* narrow screens: stack the side panel under the cube and let the page scroll */
+  @media (max-width: 900px) {
+    html, body { height: auto; overflow: auto; }
+    body { display: block; }
+    header { flex-wrap: wrap; gap: 10px; padding: 10px 14px; }
+    .controls { margin-left: 0; flex-wrap: wrap; width: 100%; }
+    #algo-select { min-width: 0; flex: 1 1 100%; }
+    main, #viz-col { display: block; }
+    #viz { height: 60vh; }
+    aside { border-left: 0; border-top: 1px solid var(--border); }
+    .hint { display: none; }
+  }
+  /* ?embed=1: just the cube and its memory strip, for thumbnails and iframes */
+  .embed, .embed body { height: 100vh; overflow: hidden; }
+  .embed body { display: grid; grid-template-rows: 1fr; }
+  .embed header, .embed aside, .embed footer,
+  .embed .hint, .embed #reset-view-btn { display: none; }
+  .embed main { display: grid; grid-template-columns: 1fr; }
+  .embed #viz-col { display: grid; }
+  .embed #viz { height: auto; }
+
+  ::-webkit-scrollbar { width: 7px; height: 7px; }
+  ::-webkit-scrollbar-track { background: var(--bg); }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--border-bright); }
+</style>
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <h1>CUDA CUBE</h1>
+      <span class="sub">thread × warp × block visualizer</span>
+    </div>
+    <div class="controls">
+      <select id="algo-select">
+        <option value="vectorAdd">1. Vector Addition (1D)</option>
+        <option value="matrixAdd">2. Matrix Addition (2D)</option>
+        <option value="reduction">3. Reduction Sum (divergence)</option>
+        <option value="matMul">4. Tiled Matrix Multiply</option>
+        <option value="stencil3D">5. 3D Stencil (7-point)</option>
+      </select>
+      <button id="reset-btn" title="Reset to cycle 0 (R)">⟲ reset</button>
+      <button id="step-back-btn" title="Back one cycle (←)">← step</button>
+      <button id="step-btn" title="Advance one cycle (→)">step →</button>
+      <button id="play-btn" class="primary" title="Play / Pause (space)"></button>
+      <select id="speed-select" title="Animation speed">
+        <option value="1500">slow</option>
+        <option value="700" selected>normal</option>
+        <option value="280">fast</option>
+      </select>
+    </div>
+  </header>
+  <main>
+    <div id="viz-col">
+      <div id="viz">
+        <canvas id="canvas"></canvas>
+        <div class="axes" id="axes-label"></div>
+        <div class="hint">drag · rotate &nbsp;·&nbsp; scroll · zoom &nbsp;·&nbsp; right-drag · pan &nbsp;·&nbsp; hover a thread for details</div>
+        <button id="reset-view-btn" title="Reset to default view angle">⌖ reset view</button>
+        <div id="block-labels"></div>
+        <div id="tooltip"></div>
+      </div>
+      <div id="data-view">
+        <div class="data-header">
+          <span class="panel-label">Memory state</span>
+          <span class="data-legend">
+            <span class="dl-item"><span class="dl-sw read"></span>reading</span>
+            <span class="dl-item"><span class="dl-sw write"></span>writing</span>
+            <span class="dl-item"><span class="dl-sw"></span>untouched</span>
+            <span class="dl-item"><span class="dl-sw done"></span>computed</span>
+          </span>
+        </div>
+        <div id="data-content"></div>
+      </div>
+    </div>
+    <aside>
+      <div class="panel">
+        <div class="panel-label">Algorithm</div>
+        <div class="algo-name" id="algo-name"></div>
+        <div class="algo-desc" id="algo-desc"></div>
+        <div class="dim-pills" id="dim-pills"></div>
+      </div>
+      <div class="panel">
+        <div class="panel-label">Kernel</div>
+        <div class="code-block" id="code-block"></div>
+      </div>
+      <div class="panel">
+        <div class="panel-label">What's happening this cycle</div>
+        <div class="note" id="note"></div>
+      </div>
+      <div class="panel">
+        <div class="panel-label">Live stats</div>
+        <div class="stats">
+          <div class="stat"><div class="k">Cycle</div><div class="v" id="stat-cycle"></div></div>
+          <div class="stat"><div class="k">Active threads</div><div class="v" id="stat-active"></div></div>
+          <div class="stat"><div class="k">Warps running</div><div class="v" id="stat-warps"></div></div>
+          <div class="stat"><div class="k">Blocks done</div><div class="v" id="stat-blocks"></div></div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-label">Legend</div>
+        <div class="legend-row"><div class="swatch" style="background:#1a2a0a;border:1px solid #2a3b1a"></div><span>idle / queued</span></div>
+        <div class="legend-row"><div class="swatch" style="background:#76b900;box-shadow:0 0 8px rgba(118,185,0,.55)"></div><span>executing this cycle</span></div>
+        <div class="legend-row"><div class="swatch" style="background:#3c5b14"></div><span>completed</span></div>
+        <div class="legend-row"><div class="swatch" style="background:#ff7385"></div><span>divergent / masked off</span></div>
+        <div class="legend-row"><div class="swatch" style="border:1px solid #59c2ff"></div><span>block boundary (cyan = running)</span></div>
+      </div>
+    </aside>
+  </main>
+  <footer>
+    <span><span class="run-dot paused" id="run-dot"></span><span id="footer-status"></span></span>
+    <div class="progress"><div class="progress-bar" id="progress-bar"></div></div>
+    <span id="footer-info"></span>
+  </footer>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/0.158.0/three.min.js"></script>
+  <script>
+  // ---- the examples ----
+  // Each declares its launch shape, kernel source, memory layout, and
+  // generateCycles(): the hand-authored animation, one cycle per step. This is a
+  // teaching model, not a simulation: a few pretend SMs run one block each.
+
+  const range = n => Array.from({ length: n }, (_, i) => i);
+  // block ids grouped into the waves that run together on a GPU with `sms` SMs
+  const waves = (blocks, sms) => range(Math.ceil(blocks / sms)).map(w => range(blocks).slice(w * sms, (w + 1) * sms));
+  // one cycle: the running threads, the finished blocks, the lit source line, and the note shown beside it.
+  // `extra` adds memory-strip activity (reads, writes, highlights) and divergence.
+  const cycle = (activeThreads, done, codeLine, warpsRunning, note, extra) =>
+    ({ activeThreads, completedBlocks: new Set(done), codeLine, warpsRunning, note, ...extra });
+
+  const ALGOS = {
+    vectorAdd: {
+      name: "Vector Addition",
+      desc: "C[i] = A[i] + B[i]. Each thread handles one element. 1D grid of 1D blocks — the canonical CUDA hello-world.",
+      grid:  { x: 4, y: 1, z: 1 },
+      block: { x: 32, y: 1, z: 1 },
+      dim: 1,
+      dataView: {
+        kind: 'arrays',
+        arrays: [
+          { id: 'A', label: 'A[]', size: 128 },
+          { id: 'B', label: 'B[]', size: 128 },
+          { id: 'C', label: 'C[]', size: 128 }
+        ]
+      },
+      // memory cells finished once block `bid` is done, per array
+      completedCells(bid) {
+        const cells = range(32).map(t => bid * 32 + t);
+        return { A: cells, B: cells, C: cells };
+      },
+      code: [
+        "__global__ void vecAdd(float* A, float* B,",
+        "                       float* C, int N) {",
+        "  int i = blockIdx.x * blockDim.x + threadIdx.x;",
+        "  if (i < N) {",
+        "    C[i] = A[i] + B[i];",
+        "  }",
+        "}"
+      ],
+      generateCycles() {
+        const cycles = [], done = new Set();
+        for (const running of waves(4, 2)) {
+          const active = running.flatMap(b => range(32).map(t => b * 32 + t));
+          const n = running.length;
+          cycles.push(
+            cycle(active, done, 3, n, `Blocks ${running.join(" & ")} schedule onto SMs. All 32 threads in each block (= 1 warp) compute their global index <b>i</b> in lockstep.`),
+            cycle(active, done, 4, n, "The whole warp evaluates the bounds predicate <b>i &lt; N</b>. Same instruction, every lane — no divergence."),
+            cycle(active, done, 5, n, "Coalesced load of <b>A[i]</b>, <b>B[i]</b> → add → coalesced store to <b>C[i]</b>. This kernel is memory-bound, not compute-bound.",
+              { reads: { A: active, B: active }, writes: { C: active } }));
+          running.forEach(b => done.add(b));
+        }
+        cycles.push(cycle([], done, 7, 0, "Kernel complete. All <b>128</b> threads have written their result."));
+        return cycles;
+      }
+    },
+
+    matrixAdd: {
+      name: "Matrix Addition (2D)",
+      desc: "C[i][j] = A[i][j] + B[i][j]. Now we use a 2D grid and 2D blocks — threadIdx.x and threadIdx.y both come into play.",
+      grid:  { x: 4, y: 4, z: 1 },
+      block: { x: 8, y: 8, z: 1 },
+      dim: 2,
+      dataView: { kind: 'matrices', op: '+' },
+      // the 32x32 matrix cell that global thread g works on
+      _cell(g) {
+        const bid = g >> 6, tid = g & 63;
+        const row = (bid >> 2) * 8 + (tid >> 3), col = (bid & 3) * 8 + (tid & 7);
+        return row * 32 + col;
+      },
+      completedCells(bid) {
+        const cells = range(64).map(t => this._cell(bid * 64 + t));
+        return { A: cells, B: cells, C: cells };
+      },
+      code: [
+        "__global__ void matAdd(float* A, float* B, float* C,",
+        "                       int rows, int cols) {",
+        "  int col = blockIdx.x * blockDim.x + threadIdx.x;",
+        "  int row = blockIdx.y * blockDim.y + threadIdx.y;",
+        "  if (row < rows && col < cols) {",
+        "    int i = row * cols + col;",
+        "    C[i] = A[i] + B[i];",
+        "  }",
+        "}"
+      ],
+      generateCycles() {
+        const cycles = [], done = new Set();
+        for (const running of waves(16, 4)) {
+          const coords = running.map(b => `(${b & 3},${b >> 2})`).join(", ");
+          const n = running.length;
+          for (const warp of range(2)) {   // 64 threads per block = 2 warps
+            const active = running.flatMap(b => range(32).map(t => b * 64 + warp * 32 + t));
+            const cells = active.map(g => this._cell(g));
+            cycles.push(
+              cycle(active, done, 3, n, `Blocks ${coords}, warp ${warp}: compute 2D coords <b>(col, row)</b> from <b>blockIdx</b>·<b>blockDim</b>+<b>threadIdx</b>.`),
+              cycle(active, done, 7, n, `Warp ${warp} of ${n} blocks does load → add → store. Each row of 8 threads touches 8 <b>contiguous</b> floats — consecutive lanes hit adjacent addresses, which is why threadIdx.x is the "fast" dim.`,
+                { reads: { A: cells, B: cells }, writes: { C: cells } }));
+          }
+          running.forEach(b => done.add(b));
+        }
+        cycles.push(cycle([], done, 9, 0, "All <b>16</b> blocks complete. 1024 elements written."));
+        return cycles;
+      }
+    },
+
+    reduction: {
+      name: "Reduction Sum",
+      desc: "Tree-style sum within a single block. Watch threads drop out of the active set every stage — this is the classic warp divergence demo.",
+      grid:  { x: 1, y: 1, z: 1 },
+      block: { x: 64, y: 1, z: 1 },
+      dim: 1,
+      dataView: {
+        kind: 'arrays',
+        arrays: [
+          { id: 'in',  label: 'in[]',  size: 64 },
+          { id: 's',   label: 's[]',   size: 64, sub: 'shared' },
+          { id: 'out', label: 'out[]', size: 1 }
+        ]
+      },
+      code: [
+        "__global__ void reduce(float* in, float* out) {",
+        "  __shared__ float s[64];",
+        "  int tid = threadIdx.x;",
+        "  s[tid] = in[blockIdx.x*blockDim.x + tid];",
+        "  __syncthreads();",
+        "  for (int stride = 1; stride < 64; stride *= 2) {",
+        "    if (tid % (2*stride) == 0) {",
+        "      s[tid] += s[tid + stride];",
+        "    }",
+        "    __syncthreads();",
+        "  }",
+        "  if (tid == 0) out[blockIdx.x] = s[0];",
+        "}"
+      ],
+      generateCycles() {
+        const all = range(64), none = [];
+        const cycles = [
+          cycle(all, none, 4, 2, "All <b>64</b> threads (2 warps) cooperatively load from global → shared memory. Coalesced load, every lane active.",
+            { reads: { in: all }, writes: { s: all } }),
+          cycle(all, none, 5, 2, "<b>__syncthreads()</b> — barrier. All threads in the block must arrive before any can proceed. Cross-warp synchronization.")
+        ];
+        for (let stride = 1; stride < 64; stride *= 2) {
+          const active = all.filter(t => t % (2 * stride) === 0);
+          // a warp only diverges if its lanes disagree; a warp with no taker skips the branch as a unit
+          const mixedWarps = new Set(active.map(t => t >> 5));
+          const divergent = all.filter(t => !active.includes(t) && mixedWarps.has(t >> 5));
+          const skipped = 64 - active.length - divergent.length;
+          cycles.push(
+            cycle(active, none, 8, mixedWarps.size,
+              `Stride=<b>${stride}</b>: only <b>${active.length}</b> of 64 threads add. ${divergent.length} lanes are <span class="masked">masked off</span> inside a warp whose other lanes take the branch — they still occupy the warp slot, which is wasted SIMT throughput. This is <b>branch divergence</b>.`
+                + (skipped ? ` Warp 1 has no taker at all, so its ${skipped} threads skip the branch as a unit — no divergence there.` : ''),
+              { divergentThreads: divergent, divergent: true,
+                reads: { s: active.map(t => t + stride) }, writes: { s: active }, divergentData: { s: divergent } }),
+            cycle(all, none, 10, 2, `Barrier after stride=${stride}. Every thread (even masked ones) must reach this point — that's why you can't <b>return early</b> from a kernel that uses __syncthreads.`));
+        }
+        cycles.push(
+          cycle([0], none, 12, 1, "Final write: only thread 0 stores <b>s[0]</b> to global memory. The other 31 lanes of warp 0 are masked for this instruction — they paid the cycle either way. Warp 1 skips the branch as a unit.",
+            { divergentThreads: range(32).slice(1), divergent: true, reads: { s: [0] }, writes: { out: [0] } }),
+          cycle(none, [0], 13, 0, "Reduction complete. 64 inputs → 1 output. log₂(64) = 6 stages, plus load + write."));
+        return cycles;
+      }
+    },
+
+    matMul: {
+      name: "Tiled Matrix Multiply",
+      desc: "C = A·B with shared-memory tiling. Block cooperatively loads tiles into __shared__, syncs, computes, syncs, repeats over K-tiles.",
+      grid:  { x: 2, y: 2, z: 1 },
+      block: { x: 16, y: 16, z: 1 },
+      dim: 2,
+      dataView: { kind: 'matrices', op: '·' },
+      // the cells of the 16x16 tile whose top-left corner is (row, col) in a 32x32 matrix
+      _tile(row, col) { return range(256).map(i => (row + (i >> 4)) * 32 + col + (i & 15)); },
+      completedCells(bid) { return { C: this._tile((bid >> 1) * 16, (bid & 1) * 16) }; },
+      code: [
+        "__global__ void matMul(float* A, float* B,",
+        "                       float* C, int N) {",
+        "  __shared__ float As[16][16], Bs[16][16];",
+        "  int row = blockIdx.y*16 + threadIdx.y;",
+        "  int col = blockIdx.x*16 + threadIdx.x;",
+        "  float acc = 0.0f;",
+        "  for (int t = 0; t < N/16; t++) {",
+        "    As[threadIdx.y][threadIdx.x] =",
+        "       A[row*N + t*16 + threadIdx.x];",
+        "    Bs[threadIdx.y][threadIdx.x] =",
+        "       B[(t*16+threadIdx.y)*N + col];",
+        "    __syncthreads();",
+        "    for (int k = 0; k < 16; k++)",
+        "      acc += As[threadIdx.y][k] * Bs[k][threadIdx.x];",
+        "    __syncthreads();",
+        "  }",
+        "  C[row*N + col] = acc;",
+        "}"
+      ],
+      generateCycles() {
+        const cycles = [], done = new Set();
+        for (const running of waves(4, 2)) {
+          const active = running.flatMap(b => range(256).map(t => b * 256 + t));
+          const warps = running.length * 8;   // 256 threads per block = 8 warps
+          for (const t of range(2)) {         // two K-tiles
+            const aTile = running.flatMap(b => this._tile((b >> 1) * 16, t * 16));
+            const bTile = running.flatMap(b => this._tile(t * 16, (b & 1) * 16));
+            cycles.push(
+              cycle(active, done, 9, warps, `K-tile <b>${t + 1}/2</b>: all <b>256</b> threads per block cooperatively load A's tile from global → <b>__shared__</b>. ${warps} warps active.`,
+                { reads: { A: aTile } }),
+              cycle(active, done, 11, warps, "Then B's tile, the same way. Consecutive lanes read adjacent addresses, so both loads coalesce along x.",
+                { reads: { B: bTile } }),
+              cycle(active, done, 12, warps, "<b>__syncthreads()</b>: every warp waits for the tile loads to finish. Without this, a fast warp could read garbage from shared mem."),
+              cycle(active, done, 14, warps, "Compute phase: each thread does 16 multiply-adds reading only <b>shared</b> memory — on-chip, so the inner loop issues no global loads. This is the whole point of tiling.",
+                { highlights: { A: aTile, B: bTile } }),
+              cycle(active, done, 15, warps, "Sync again before reusing the shared mem tiles for the next K iteration."));
+          }
+          cycles.push(cycle(active, done, 17, warps, "K-loop done. Each thread writes its single accumulated C element back to global memory.",
+            { writes: { C: running.flatMap(b => this.completedCells(b).C) } }));
+          running.forEach(b => done.add(b));
+        }
+        cycles.push(cycle([], done, 18, 0, "All 4 blocks complete. Every tile element was loaded once and reused by 16 threads — 16× fewer global loads per thread than the naive kernel."));
+        return cycles;
+      }
+    },
+
+    stencil3D: {
+      name: "3D Stencil (7-point)",
+      desc: "Each interior cell = average of itself and 6 axis-neighbors; boundary cells copy through. Now the index space is genuinely 3D — every CUDA dim is doing real work.",
+      grid:  { x: 2, y: 2, z: 2 },
+      block: { x: 4, y: 4, z: 4 },
+      dim: 3,
+      dataView: { kind: 'volume', id: 'out', label: 'out (z-slices, ←x→ ↑y↓)' },
+      // the 8x8x8 volume cell that global thread g works on
+      _cell(g) {
+        const bid = g >> 6, tid = g & 63;
+        const x = (bid & 1) * 4 + (tid & 3), y = (bid >> 1 & 1) * 4 + (tid >> 2 & 3), z = (bid >> 2) * 4 + (tid >> 4);
+        return (z * 8 + y) * 8 + x;
+      },
+      completedCells(bid) { return { out: range(64).map(t => this._cell(bid * 64 + t)) }; },
+      code: [
+        "__global__ void stencil3D(float* in, float* out,",
+        "                          int N) {",
+        "  int x = blockIdx.x*blockDim.x + threadIdx.x;",
+        "  int y = blockIdx.y*blockDim.y + threadIdx.y;",
+        "  int z = blockIdx.z*blockDim.z + threadIdx.z;",
+        "  int idx = (z*N + y)*N + x;",
+        "  if (x == 0 || x == N-1 ||",
+        "      y == 0 || y == N-1 ||",
+        "      z == 0 || z == N-1) {",
+        "    out[idx] = in[idx];  // boundary",
+        "    return;",
+        "  }",
+        "  out[idx] = (in[idx]",
+        "          + in[idx-1]   + in[idx+1]",
+        "          + in[idx-N]   + in[idx+N]",
+        "          + in[idx-N*N] + in[idx+N*N]) / 7.0f;",
+        "}"
+      ],
+      generateCycles() {
+        const cycles = [], done = new Set();
+        for (const running of waves(8, 4)) {
+          const coords = running.map(b => `(${b & 1},${b >> 1 & 1},${b >> 2})`).join(", ");
+          const n = running.length;
+          for (const warp of range(2)) {   // 64 threads per block = 2 warps
+            const active = running.flatMap(b => range(32).map(t => b * 64 + warp * 32 + t));
+            cycles.push(
+              cycle(active, done, 3, n, `Blocks ${coords}, warp ${warp}: each thread computes its 3D coords <b>(x, y, z)</b> from blockIdx and threadIdx.`),
+              cycle(active, done, 13, n, `Warp ${warp}: boundary lanes copy through, interior lanes load themselves + 6 neighbors and write out[idx]. With blocks only 4 wide in x, every load splits into short 4-float runs, and the ±N·N (z) neighbors sit a whole plane away. Production code loads a shared-memory tile plus halo instead.`,
+                { writes: { out: active.map(g => this._cell(g)) } }));
+          }
+          running.forEach(b => done.add(b));
+        }
+        cycles.push(cycle([], done, 17, 0, "All 8 blocks complete. 512 3D cells updated."));
+        return cycles;
+      }
+    }
+  };
+
+  // ---- scene ----
+  const COLOR = {
+    idle:      new THREE.Color(0x1a2a0a),
+    active:    new THREE.Color(0x76b900),
+    divergent: new THREE.Color(0xff7385),
+    completed: new THREE.Color(0x3c5b14),
+    queued:    new THREE.Color(0x3a4a5c),   // block outlines
+    running:   new THREE.Color(0x59c2ff),
+    done:      new THREE.Color(0x2a3b1a),
+  };
+  // the state before the first cycle
+  const IDLE = {
+    activeThreads: [], completedBlocks: new Set(), warpsRunning: 0,
+    note: 'Press play or step to begin. This is a teaching model: a few pretend SMs run one block each, and a "cycle" is one step of the kernel, not a clock cycle.'
+  };
+  const $ = id => document.getElementById(id);
+  const viz = $('viz'), canvas = $('canvas'), tooltip = $('tooltip');
+
+  let algo, cycles = [], cycleIdx = -1, playing = false, playTimer;
+  let threadMesh, threadMeta = [];
+  const blockOutlines = new Map(), blockCenters = new Map(), blockLabels = new Map();   // keyed by block id
+  let extent = { x: 0, y: 0, z: 0 };   // the cube's size in world units
+  let viewSize = 30;                   // short side of the camera frustum, world units
+  const orbit = { theta: 0, phi: 1, radius: 80, target: new THREE.Vector3() };
+
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x0a0e14);
+  scene.add(new THREE.AmbientLight(0xffffff, 0.7));
+  const key = new THREE.DirectionalLight(0xffffff, 0.6);
+  key.position.set(20, 30, 15);
+  const fill = new THREE.DirectionalLight(0x88aaff, 0.2);
+  fill.position.set(-15, 10, -10);
+  scene.add(key, fill);
+  const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, -200, 500);   // sized in onResize
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  const raycaster = new THREE.Raycaster();
+
+  function onResize() {
+    if (!viz.clientWidth || !viz.clientHeight) return;
+    const aspect = viz.clientWidth / viz.clientHeight;
+    // viewSize is the short side, so a portrait canvas doesn't crop the cube
+    const h = aspect < 1 ? viewSize / aspect : viewSize;
+    camera.left = -h * aspect / 2;
+    camera.right = h * aspect / 2;
+    camera.top = h / 2;
+    camera.bottom = -h / 2;
+    camera.updateProjectionMatrix();
+    renderer.setSize(viz.clientWidth, viz.clientHeight, false);
+  }
+  // also fires when the memory strip changes height and resizes the canvas with it
+  new ResizeObserver(onResize).observe(viz);
+
+  function applyOrbit() {
+    camera.position.set(
+      orbit.target.x + orbit.radius * Math.sin(orbit.phi) * Math.cos(orbit.theta),
+      orbit.target.y + orbit.radius * Math.cos(orbit.phi),
+      orbit.target.z + orbit.radius * Math.sin(orbit.phi) * Math.sin(orbit.theta));
+    camera.lookAt(orbit.target);
+  }
+  function zoom(factor) {
+    viewSize = Math.max(4, Math.min(200, viewSize * factor));
+    onResize();
+  }
+  function setDefaultView() {
+    // 1D: side view. 2D: tilted top-down. 3D: isometric.
+    const { x, y, z } = extent;
+    [orbit.theta, orbit.phi, viewSize] = [
+      [Math.PI / 2, Math.PI / 2 - 0.18, Math.max(x * 1.15, 6)],
+      [Math.PI / 4, Math.PI / 4.5, Math.max(x, z) * 1.55],
+      [Math.PI / 4, Math.PI / 3.2, Math.max(x, y, z) * 1.7]
+    ][algo.dim - 1];
+    orbit.target.set(0, y / 2, 0);
+    applyOrbit();
+    onResize();
+  }
+
+  // pointer events cover mouse and touch: one pointer rotates (right button pans), two pinch-zoom
+  const pointers = new Map();   // pointerId -> last position
+  let panning = false, pinch = 0;
+  canvas.addEventListener('pointerdown', e => {
+    canvas.setPointerCapture(e.pointerId);
+    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    panning = e.button === 2;
+    pinch = 0;
+    e.preventDefault();
+  });
+  const release = e => {
+    pointers.delete(e.pointerId);
+    pinch = 0;
+    if (!pointers.size) panning = false;
+  };
+  canvas.addEventListener('pointerup', release);
+  canvas.addEventListener('pointercancel', release);
+  canvas.addEventListener('contextmenu', e => e.preventDefault());
+  canvas.addEventListener('pointermove', e => {
+    const p = pointers.get(e.pointerId);
+    if (!p) return showTooltip(e);
+    const dx = e.clientX - p.x, dy = e.clientY - p.y;
+    p.x = e.clientX;
+    p.y = e.clientY;
+    if (pointers.size === 2) {
+      const [a, b] = [...pointers.values()];
+      const d = Math.hypot(a.x - b.x, a.y - b.y);
+      if (pinch && d) zoom(pinch / d);
+      pinch = d;
+    } else if (panning) {
+      orbit.target.addScaledVector(new THREE.Vector3().setFromMatrixColumn(camera.matrix, 0), -dx * 0.02);
+      orbit.target.addScaledVector(new THREE.Vector3().setFromMatrixColumn(camera.matrix, 1), dy * 0.02);
+      applyOrbit();
+    } else {
+      orbit.theta -= dx * 0.006;
+      orbit.phi = Math.max(0.1, Math.min(Math.PI - 0.1, orbit.phi - dy * 0.006));
+      applyOrbit();
+    }
+  });
+  canvas.addEventListener('pointerleave', () => tooltip.classList.remove('show'));
+  canvas.addEventListener('wheel', e => {
+    e.preventDefault();
+    zoom(1 + e.deltaY * 0.0012);
+  }, { passive: false });
+
+  function showTooltip(e) {
+    const rect = canvas.getBoundingClientRect();
+    const x = e.clientX - rect.left, y = e.clientY - rect.top;
+    raycaster.setFromCamera(new THREE.Vector2(x / rect.width * 2 - 1, 1 - y / rect.height * 2), camera);
+    const hit = raycaster.intersectObject(threadMesh)[0];
+    tooltip.classList.toggle('show', !!hit);
+    if (!hit) return;
+    const m = threadMeta[hit.instanceId], B = algo.block;
+    const tid = m.tx + m.ty * B.x + m.tz * B.x * B.y;
+    const gx = m.bx * B.x + m.tx, gy = m.by * B.y + m.ty, gz = m.bz * B.z + m.tz;
+    tooltip.innerHTML =
+      `<b>thread</b> global #${hit.instanceId}<br>` +
+      `blockIdx = (${m.bx}, ${m.by}, ${m.bz})<br>` +
+      `threadIdx = (${m.tx}, ${m.ty}, ${m.tz})<br>` +
+      `<span class="lane">warp ${tid >> 5} · lane ${tid & 31}</span><br>` +
+      `<span class="index">${[`i = tx + bx·${B.x} = ${gx}`, `row=${gy}, col=${gx}`, `(x,y,z) = (${gx},${gy},${gz})`][algo.dim - 1]}</span>`;
+    tooltip.style.left = x + 'px';
+    tooltip.style.top = y + 'px';
+  }
+
+  // one box per thread, an outline and a label per block.
+  // CUDA x -> world X, CUDA y -> world Z (depth), CUDA z -> world Y (up)
+  function buildCube() {
+    if (threadMesh) {
+      scene.remove(threadMesh, ...blockOutlines.values());
+      for (const obj of [threadMesh, ...blockOutlines.values()]) {
+        obj.geometry.dispose();
+        obj.material.dispose();
+      }
+    }
+    blockOutlines.clear();
+    blockCenters.clear();
+    blockLabels.clear();
+    $('block-labels').innerHTML = '';
+    threadMeta = [];
+
+    const G = algo.grid, B = algo.block;
+    const cell = 0.78, step = cell + 0.06, blockGap = 0.55;
+    const bw = B.x * step, bd = B.y * step, bh = B.z * step;   // one block
+    extent = {
+      x: G.x * (bw + blockGap) - blockGap,
+      y: G.z * (bh + blockGap) - blockGap,
+      z: G.y * (bd + blockGap) - blockGap
+    };
+
+    const blocks = G.x * G.y * G.z;
+    threadMesh = new THREE.InstancedMesh(
+      new THREE.BoxGeometry(cell, cell, cell), new THREE.MeshLambertMaterial(), blocks * B.x * B.y * B.z);
+    const outline = new THREE.BoxGeometry(bw, bh, bd);
+    const place = new THREE.Object3D();
+    for (let bz = 0; bz < G.z; bz++)
+    for (let by = 0; by < G.y; by++)
+    for (let bx = 0; bx < G.x; bx++) {
+      const bid = bx + (by + bz * G.y) * G.x;
+      // world position of the block's first thread
+      const ox = (cell - extent.x) / 2 + bx * (bw + blockGap);
+      const oy = cell / 2 + bz * (bh + blockGap);
+      const oz = (cell - extent.z) / 2 + by * (bd + blockGap);
+      for (let tz = 0; tz < B.z; tz++)
+      for (let ty = 0; ty < B.y; ty++)
+      for (let tx = 0; tx < B.x; tx++) {
+        place.position.set(ox + tx * step, oy + tz * step, oz + ty * step);
+        place.updateMatrix();
+        threadMesh.setMatrixAt(threadMeta.length, place.matrix);
+        threadMeta.push({ bid, bx, by, bz, tx, ty, tz });
+      }
+
+      const center = new THREE.Vector3(ox + (bw - cell) / 2, oy + (bh - cell) / 2, oz + (bd - cell) / 2);
+      const line = new THREE.LineSegments(
+        new THREE.EdgesGeometry(outline), new THREE.LineBasicMaterial({ transparent: true }));
+      line.position.copy(center);
+      scene.add(line);
+      blockOutlines.set(bid, line);
+      // labels float just above the block's top face
+      blockCenters.set(bid, center.clone().setY(oy + bh - cell / 2 + 0.3));
+
+      if (blocks <= 16) {   // more labels than that is noise
+        const el = document.createElement('div');
+        el.textContent = G.z > 1 ? `B(${bx},${by},${bz})` : G.y > 1 ? `B(${bx},${by})` : `B${bx}`;
+        $('block-labels').appendChild(el);
+        blockLabels.set(bid, el);
+      }
+    }
+    outline.dispose();
+    scene.add(threadMesh);
+    setDefaultView();
+  }
+
+  function updateBlockLabels() {
+    const v = new THREE.Vector3();
+    // in a 3D grid, blocks hide each other: drop the label of any block with threads between it and the camera
+    const toCamera = algo.grid.z > 1 && camera.getWorldDirection(new THREE.Vector3()).negate();
+    for (const [bid, el] of blockLabels) {
+      const center = blockCenters.get(bid);
+      v.copy(center).project(camera);
+      let hidden = Math.abs(v.x) > 1.2 || Math.abs(v.y) > 1.2;
+      if (!hidden && toCamera) {
+        raycaster.set(center, toCamera);
+        hidden = raycaster.intersectObject(threadMesh).length > 0;
+      }
+      el.style.display = hidden ? 'none' : 'block';
+      el.style.left = (v.x + 1) / 2 * canvas.clientWidth + 'px';
+      el.style.top = (1 - v.y) / 2 * canvas.clientHeight + 'px';
+    }
+  }
+
+  (function animate() {
+    requestAnimationFrame(animate);
+    if (!algo) return;
+    updateBlockLabels();
+    renderer.render(scene, camera);
+  })();
+
+  // ---- showing a cycle ----
+  // paint cycle `idx` onto the cube, memory strip and side panel; -1 is the idle state
+  function show(idx) {
+    cycleIdx = idx;
+    const c = cycles[idx] ?? IDLE;
+    const done = c.completedBlocks;
+    const active = new Set(c.activeThreads), masked = new Set(c.divergentThreads);
+    threadMeta.forEach((m, i) => threadMesh.setColorAt(i,
+      masked.has(i) ? COLOR.divergent : active.has(i) ? COLOR.active
+        : done.has(m.bid) ? COLOR.completed : COLOR.idle));
+    threadMesh.instanceColor.needsUpdate = true;
+
+    const running = new Set(c.activeThreads.map(t => threadMeta[t].bid));
+    for (const [bid, line] of blockOutlines) {
+      const state = running.has(bid) ? 'running' : done.has(bid) ? 'done' : 'queued';
+      line.material.color.copy(COLOR[state]);
+      line.material.opacity = { running: 1, done: 0.45, queued: 0.55 }[state];
+      const label = blockLabels.get(bid);
+      if (label) label.className = 'block-label ' + state;
+    }
+    paintMemory(c);
+
+    const G = algo.grid;
+    $('stat-cycle').textContent = `${idx + 1} / ${cycles.length}`;
+    $('stat-active').textContent = c.activeThreads.length;
+    $('stat-warps').textContent = c.warpsRunning;
+    $('stat-blocks').textContent = `${done.size} / ${G.x * G.y * G.z}`;
+    $('note').innerHTML = c.note;
+    $('footer-info').textContent = `cycle ${idx + 1} of ${cycles.length}`;
+    $('progress-bar').style.width = (idx + 1) / cycles.length * 100 + '%';
+    document.querySelectorAll('.code-line').forEach((el, i) => el.classList.toggle('active', i + 1 === c.codeLine));
+    updateStatus();
+  }
+
+  function updateStatus() {
+    const divergent = cycles[cycleIdx]?.divergent;
+    const finished = cycleIdx === cycles.length - 1;
+    $('footer-status').textContent =
+      cycleIdx < 0 ? 'ready'
+      : divergent ? 'divergent warp — masked lanes idle'
+      : finished ? 'kernel complete'
+      : playing ? 'executing' : 'paused';
+    $('run-dot').classList.toggle('paused', !divergent && (!playing || finished || cycleIdx < 0));
+    $('play-btn').textContent = playing ? '⏸ pause' : '▶ play';
+  }
+
+  // ---- memory strip ----
+  function renderMemory() {
+    const dv = algo.dataView;
+    const cells = (n, cls, first = 0, text = '') =>
+      range(n).map(i => `<div class="${cls}" data-idx="${first + i}">${text}</div>`).join('');
+    // a cols x cols grid of cells numbered from `first`
+    const grid = (title, id, cols, first = 0, px = 5) =>
+      `<div class="data-grid-block"><div class="data-grid-title">${title}</div>` +
+      `<div class="data-grid" data-array="${id}" style="--cols:${cols};--px:${px}px">` +
+      cells(cols * cols, 'data-grid-cell', first) + `</div></div>`;
+
+    if (dv.kind === 'arrays') {
+      $('data-content').innerHTML = dv.arrays.map(a =>
+        `<div class="data-row"><div class="data-row-label">${a.label}` +
+        (a.sub ? `<br><span class="lbl-sub">${a.sub}</span>` : '') +
+        `</div><div class="data-cells" data-array="${a.id}">` +
+        (a.size === 1 ? cells(1, 'data-cell value', 0, '·') : cells(a.size, 'data-cell')) +
+        `</div></div>`).join('');
+    } else if (dv.kind === 'matrices') {
+      // A op B = C, three 32x32 grids on one row
+      const op = s => `<div class="data-op">${s}</div>`;
+      $('data-content').innerHTML = `<div class="data-grid-wrap matrices">` +
+        grid('A', 'A', 32) + op(dv.op) + grid('B', 'B', 32) + op('=') + grid('C (out)', 'C', 32) + `</div>`;
+    } else {
+      // an 8x8x8 volume as eight z-slices
+      $('data-content').innerHTML = `<div class="data-grid-wrap">` +
+        range(8).map(z => grid(`z=${z}`, dv.id, 8, z * 64, 6)).join('') + `</div>` +
+        `<div class="data-note">${dv.label} — each grid is a z-slice of the 8×8×8 output volume</div>`;
+    }
+  }
+
+  const CELL_STATES = ['done', 'k-tile', 'divergent', 'read', 'write'];   // later entries win
+  function paintMemory(c) {
+    const state = {};   // array id -> Map(cell index -> state)
+    const layer = (name, cellsByArray) => {
+      for (const id in cellsByArray) {
+        const m = state[id] ??= new Map();
+        for (const i of cellsByArray[id]) m.set(i, name);
+      }
+    };
+    for (const bid of c.completedBlocks) layer('done', algo.completedCells?.(bid));
+    layer('k-tile', c.highlights);
+    layer('divergent', c.divergentData);
+    layer('read', c.reads);
+    layer('write', c.writes);
+    for (const el of document.querySelectorAll('#data-content [data-idx]')) {
+      el.classList.remove(...CELL_STATES);
+      const s = state[el.parentElement.dataset.array]?.get(+el.dataset.idx);
+      if (s) el.classList.add(s);
+    }
+  }
+
+  // ---- playback ----
+  function step(delta) {
+    pause();
+    show(Math.max(-1, Math.min(cycles.length - 1, cycleIdx + delta)));
+  }
+  function play() {
+    if (cycleIdx >= cycles.length - 1) show(-1);
+    playing = true;
+    const tick = () => {
+      if (cycleIdx < cycles.length - 1) {
+        show(cycleIdx + 1);
+        playTimer = setTimeout(tick, +$('speed-select').value);
+      } else if (loopPlay) {
+        // hold on the finished kernel, then run it again
+        playTimer = setTimeout(play, 2000);
+      } else {
+        pause();
+      }
+    };
+    clearTimeout(playTimer);
+    playTimer = setTimeout(tick, 30);
+    updateStatus();
+  }
+  function pause() {
+    playing = false;
+    clearTimeout(playTimer);
+    updateStatus();
+  }
+  function reset() {
+    pause();
+    show(-1);
+  }
+
+  // ---- loading an example ----
+  function renderCode(lines) {
+    const KW = /\b(__global__|__shared__|__syncthreads|if|for|return|int|float|void)\b/g;
+    const TY = /\b(threadIdx|blockIdx|blockDim)\b/g;
+    const NUM = /\b(\d+(\.\d+)?f?)\b/g;
+    const COM = /(\/\/.*)/;
+    return lines.map((line, i) => {
+      const html = line
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(COM, '<span class="com">$1</span>')
+        .replace(KW, '<span class="kw">$1</span>')
+        .replace(TY, '<span class="typ">$1</span>')
+        .replace(NUM, '<span class="num-val">$1</span>');
+      return `<div class="code-line"><span class="num">${i + 1}</span>${html}</div>`;
+    }).join('');
+  }
+
+  function load(key) {
+    pause();
+    algo = ALGOS[key];
+    const G = algo.grid, B = algo.block, tpb = B.x * B.y * B.z;
+    const pill = (k, v) => `<span class="pill"><span class="k">${k}</span><span class="v">${v}</span></span>`;
+    $('algo-name').textContent = algo.name;
+    $('algo-desc').textContent = algo.desc;
+    $('dim-pills').innerHTML =
+      pill('grid', `(${G.x},${G.y},${G.z})`) + pill('block', `(${B.x},${B.y},${B.z})`) +
+      pill('dim', `${algo.dim}D`) + pill('threads', G.x * G.y * G.z * tpb) + pill('warps/block', tpb / 32);
+    $('code-block').innerHTML = renderCode(algo.code);
+    $('axes-label').innerHTML = [
+      '← <b>threadIdx.x</b> · <b>blockIdx.x</b> →',
+      '← <b>x</b> →&nbsp;&nbsp;↑ <b>y</b> ↓',
+      '← <b>x</b> →&nbsp;&nbsp;↑ <b>z</b> ↓&nbsp;&nbsp;↗ <b>y</b> ↙'
+    ][algo.dim - 1];
+    buildCube();
+    renderMemory();
+    cycles = algo.generateCycles();
+    show(-1);
+  }
+
+  // ---- controls ----
+  const togglePlay = () => playing ? pause() : play();
+  $('algo-select').addEventListener('change', e => load(e.target.value));
+  $('reset-btn').addEventListener('click', reset);
+  $('step-back-btn').addEventListener('click', () => step(-1));
+  $('step-btn').addEventListener('click', () => step(1));
+  $('play-btn').addEventListener('click', togglePlay);
+  $('reset-view-btn').addEventListener('click', setDefaultView);
+  addEventListener('keydown', e => {
+    if (e.target.tagName === 'SELECT' || e.metaKey || e.ctrlKey || e.altKey) return;
+    const action = { Space: togglePlay, ArrowRight: () => step(1), ArrowLeft: () => step(-1), KeyR: reset }[e.code];
+    if (!action) return;
+    e.preventDefault();
+    action();
+  });
+
+  // ---- boot ----
+  // ?algo=<key> opens on that example (e.g. ?algo=stencil3D);
+  // ?play=1 starts it running, ?play=loop also restarts it when it finishes;
+  // ?embed=1 shows only the cube and memory strip.
+  const params = new URLSearchParams(location.search);
+  document.documentElement.classList.toggle('embed', params.get('embed') === '1');
+  const loopPlay = params.get('play') === 'loop';
+  const startKey = Object.hasOwn(ALGOS, params.get('algo')) ? params.get('algo') : 'vectorAdd';
+  $('algo-select').value = startKey;
+  load(startKey);
+  if (loopPlay || params.get('play') === '1') play();
+  </script>
+</body>
+</html>
